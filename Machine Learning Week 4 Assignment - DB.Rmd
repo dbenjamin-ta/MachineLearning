@@ -1,0 +1,133 @@
+---
+title: "Predicting Qualitative Dumbell Lifting Performance with Random Forests"
+author: "Darryl Benjamin"
+date: "1 April 2018"
+output: html_document
+---
+
+#Executive Summary
+
+
+This analysis predicts one of five Dumbell Lifting classifications based on data collected from accelometers on participants' belt, forearm, arm and dumbell.
+
+The prediction uses Random Forests with 5-fold cross-validation. Due to the high level of accuracy achieved with this approach, other approaches were not explored.
+
+This document explains the data preparation, analysis used, validation results, as well as the prediction for the test dataset.
+
+#Data Preparation
+###Set Directories, Define Libraries and Read in the Data
+
+```{r include = FALSE}
+setwd("C:/Work/R-Course/Machine Learning")
+library(lubridate)
+library(dplyr)
+library(caret)
+
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+###Clean fields with Multiple NA and Blank Values
+
+In the both the training and the test set, there are multiple fields that have a large number of NA or blank values.  These values coincide with observations where the variable new_window has the value "yes", of which there were 406 cases in the training data, and none in the testing data.
+
+These values were tentatively removed.  Subsequent analysis results showed that the prediction was successful without these fields for all values of the new_window variable, and therefore no attempt was made to integrate these variables into the analysis.
+
+```{r}
+training.short <- training[,colSums(!is.na(training))>406]
+training.short <- training.short[,colSums(training.short!="")>406]
+
+testing.short <- testing[,colSums((!is.na(testing)))>0]
+testing.short <- testing.short[,colSums(testing.short!="")>0]
+```
+
+###Split the training data into a "Pure" Training and a Validation Set.
+
+Though the cross-validation in the Random Forest procedure provides some comfort of accuracy, additional validation was performed on hold-out data in a validation set.  A validation set was created.
+```{r}
+set.seed(1234)
+trainIndex = createDataPartition(y=training.short$classe,p=0.75,list=FALSE)
+training.short <- training.short[trainIndex,]
+validation.short <- training.short[-trainIndex,]
+```
+
+###Alignment of Factor Variables between Training and Testing Datasets
+The training data and testing data have factors whose levels are not defined consistently.  For the first, new_window, the factor levels are aligned.  For the second, cvtd_timestamp, the factor is converted to date format.
+```{r}
+new_window_values <- unique(as.character(training$new_window) )
+training.short$new_window <- factor(training.short$new_window, new_window_values)
+validation.short$new_window <- factor(validation.short$new_window, new_window_values)
+testing.short$new_window <- factor(testing.short$new_window, new_window_values)
+
+training.short$cvtd_timestamp <-as.Date(training.short$cvtd_timestamp, "%d/%m/%Y %H:%M")
+validation.short$cvtd_timestamp <- as.Date(validation.short$cvtd_timestamp, "%d/%m/%Y %H:%M")
+```
+
+#Random Forest Model Run
+
+###Define Model Varaibles
+The modelled variable y is defined as the classe, the 60th variable in the dataframe.
+
+The first variable is a row numbering.  As the variable is classe is sorted, if not removed the machine learning algorithm will use this to predict the variables.  In addition, the modelled variable is removed from the set of predictors (x).
+```{r}
+x <- training.short[,-c(1,60)]
+y <- training.short[,60]
+```
+
+###Random Forest Model Run
+The model is run using parallel processing to speed up processing time.
+Rather than using bootstrap simulations, the Random Forest uses 5-fold cross-validation.
+```{r include = FALSE}
+library(parallel)
+library(doParallel)
+```
+```{r}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+##Configure trainControl object
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+
+modFit.rf <- train(x,y, method = "rf",trControl = fitControl)
+
+##De-register parallel processing cluster
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+###Model Output
+```{r}
+modFit.rf
+modFit.rf$resample
+confusionMatrix.train(modFit.rf)
+plot(modFit.rf, main="Accuracy by Predictors")
+modFit.rf$finalModel$importance
+```
+This output shows extemely good accuracy across folds, and highlights the factors that are most predictive.  Three variables stand out - raw_timestamp_part_1, num_window, and roll_belt, with another five variables being less predictive, but still standing out from the pack.
+
+###Model Validation
+Calculate the confusion matrix and accuracy on the validation set.
+```{r}
+pred.rf.valid <-predict(modFit.rf$finalModel, validation.short[,-c(1,60)])
+confus.matrix <- table(validation.short$classe, pred.rf.valid)
+valid.accuracy <- (confus.matrix[1,1] + confus.matrix[2,2] + confus.matrix[3,3] + confus.matrix[4,4] + confus.matrix[5,5])/length(pred.rf.valid)
+confus.matrix
+valid.accuracy
+```
+
+With accuracy over 99%, this is satisfactory for our purposes.  I only wish real life was like this.
+
+#Predicting the Test Set
+The test set predictions are obtained by applying the fitted model to predict on the testing data.
+
+These are the values used on the quiz.
+
+```{r}
+testing.short$cvtd_timestamp <-as.Date(testing.short$cvtd_timestamp, "%d/%m/%Y %H:%M")
+testing.short <- testing.short[,-1]
+
+pred.rf <- predict(modFit.rf$finalModel, testing.short)
+pred.rf
+```
